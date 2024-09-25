@@ -1,0 +1,18 @@
+[package]
+name = "header-range"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ethnum = "1.5.0"
+getset = "0.1.2"
+num-rational = "0.4.2"
+num-traits = "0.2"
+num-bigint = "0.4.5"
+num-integer = "0.1.46"
+blake2 = "0.10.6"
+merkle-log = { version = "0.1.0", git = "https://github.com/kadena-io/merkle-log-rs.git" }
+sha2 = "0.10.8"
+
+[dev-dependencies]
+base64 = "0.22.1"
