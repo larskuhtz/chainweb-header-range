@@ -17,7 +17,7 @@ pub mod compact;
 // Graph changes happen very rarely. We do not create internal indexes for them.
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct Epoch(u64);
+pub struct Epoch(u64);
 
 impl Epoch {
     pub fn start_height(self) -> BlockHeight {
@@ -75,10 +75,10 @@ impl<const CHAIN_COUNT: usize> EpochIdx<CHAIN_COUNT> {
     pub fn new(epoch: Epoch, chain: ChainId) -> EpochIdx<CHAIN_COUNT> {
         EpochIdx(epoch.0 as usize * CHAIN_COUNT + chain.0 as usize)
     }
-    pub fn row(epoch: Epoch) -> impl Iterator<Item = EpochIdx<CHAIN_COUNT>> {
+    pub fn layer(epoch: Epoch) -> impl Iterator<Item = EpochIdx<CHAIN_COUNT>> {
         let start = epoch.0 as usize * CHAIN_COUNT;
         let end = start + CHAIN_COUNT;
-        (start..end).map(|i| EpochIdx(i))
+        (start..end).map(EpochIdx)
     }
 }
 
@@ -101,10 +101,10 @@ impl<const CHAIN_COUNT: usize, T> EpochTable<CHAIN_COUNT, T> {
         &self.v[idx.0]
     }
     pub fn get(&self, epoch: Epoch, chain: ChainId) -> &T {
-        &self.at(EpochIdx::<CHAIN_COUNT>::new(epoch, chain))
+        self.at(EpochIdx::<CHAIN_COUNT>::new(epoch, chain))
     }
-    pub fn row(&self, epoch: Epoch) -> impl Iterator<Item = &T> {
-        EpochIdx::<CHAIN_COUNT>::row(epoch).map(|i| self.at(i))
+    pub fn layer(&self, epoch: Epoch) -> impl Iterator<Item = &T> {
+        EpochIdx::<CHAIN_COUNT>::layer(epoch).map(|i| self.at(i))
     }
 }
 
@@ -121,13 +121,13 @@ impl<const CHAIN_COUNT: usize> HeightIdx<CHAIN_COUNT> {
     pub fn new(height: BlockHeight, chain: ChainId) -> HeightIdx<CHAIN_COUNT> {
         HeightIdx(height.0 as usize * CHAIN_COUNT + chain.0 as usize)
     }
-    pub fn row(height: BlockHeight) -> impl Iterator<Item = HeightIdx<CHAIN_COUNT>> {
+    pub fn layer(height: BlockHeight) -> impl Iterator<Item = HeightIdx<CHAIN_COUNT>> {
         let start = height.0 as usize * CHAIN_COUNT;
         let end = start + CHAIN_COUNT;
-        (start..end).map(|i| HeightIdx(i))
+        (start..end).map(HeightIdx)
     }
-    pub fn epoch_end_row(epoch: Epoch) -> impl Iterator<Item = HeightIdx<CHAIN_COUNT>> {
-        HeightIdx::<CHAIN_COUNT>::row(epoch.end_height())
+    pub fn epoch_end_layer(epoch: Epoch) -> impl Iterator<Item = HeightIdx<CHAIN_COUNT>> {
+        HeightIdx::<CHAIN_COUNT>::layer(epoch.end_height())
     }
 }
 
@@ -150,13 +150,13 @@ impl<const CHAIN_COUNT: usize, T> HeightTable<CHAIN_COUNT, T> {
         &self.v[idx.0]
     }
     pub fn get(&self, height: BlockHeight, chain: ChainId) -> &T {
-        &self.at(HeightIdx::<CHAIN_COUNT>::new(height, chain))
+        self.at(HeightIdx::<CHAIN_COUNT>::new(height, chain))
     }
-    pub fn row(&self, height: BlockHeight) -> impl Iterator<Item = &T> {
-        HeightIdx::<CHAIN_COUNT>::row(height).map(|i| self.at(i))
+    pub fn layer(&self, height: BlockHeight) -> impl Iterator<Item = &T> {
+        HeightIdx::<CHAIN_COUNT>::layer(height).map(|i| self.at(i))
     }
-    pub fn epoch_end_row(&self, epoch: Epoch) -> impl Iterator<Item = &T> {
-        HeightIdx::<CHAIN_COUNT>::epoch_end_row(epoch).map(|i| self.at(i))
+    pub fn epoch_end_layer(&self, epoch: Epoch) -> impl Iterator<Item = &T> {
+        HeightIdx::<CHAIN_COUNT>::epoch_end_layer(epoch).map(|i| self.at(i))
     }
 }
 
@@ -176,14 +176,14 @@ impl<const CHAIN_COUNT: usize, T> HeightTable<CHAIN_COUNT, T> {
 ///
 pub struct BlockRange<const CHAIN_COUNT: usize, const GRAPH_DEGREE: usize> {
     /// block height of the first block in the range (inclusive)
-    start_height: BlockHeight,
+    pub start_height: BlockHeight,
 
     /// block height of the last block in the range (exclusive)
-    end_height: BlockHeight,
+    pub end_height: BlockHeight,
 
     // constants
+    pub version: ChainwebVersion,
     flags: BlockFlags,
-    version: ChainwebVersion,
 
     // Properties that are indexed by chain x epoch
     /// target for the epoch
@@ -261,7 +261,7 @@ impl<const CHAIN_COUNT: usize, const GRAPH_DEGREE: usize> BlockRange<CHAIN_COUNT
         BlockWeight(epoch_start_weight.0 + target.0 * u256::from(epoch_offset))
     }
 
-    pub fn get_header<'a>(&'a self, chain: ChainId, height: BlockHeight) -> HeaderView<'a> {
+    pub fn get_header(&self, chain: ChainId, height: BlockHeight) -> HeaderView {
         let idx = HeightIdx::<CHAIN_COUNT>::new(height, chain);
         HeaderView {
             flags: self.flags,
@@ -295,9 +295,9 @@ use std::iter::once;
 // FIXME: this depends on GRAPH.
 impl<const CHAIN_COUNT: usize, const GRAPH_DEGREE: usize> BlockRange<CHAIN_COUNT, GRAPH_DEGREE> {
     /// Compute the targets for a new epoch.
-    pub fn target_row<'a>(&'a self, epoch: Epoch) -> impl Iterator<Item = BlockTarget> + 'a {
+    fn target_layer(&self, epoch: Epoch) -> impl Iterator<Item = BlockTarget> {
         let degree = uint_as_rational(GRAPH_DEGREE + 1);
-        let tmp_targets: Vec<BlockTarget> = self.local_adjust_row(epoch).collect();
+        let tmp_targets: Vec<BlockTarget> = self.local_adjust_layer(epoch).collect();
         GRAPH.iter().enumerate().map(move |(cid, parent_idxs)| {
             let sum: BigRational = parent_idxs
                 .iter()
@@ -324,10 +324,10 @@ impl<const CHAIN_COUNT: usize, const GRAPH_DEGREE: usize> BlockRange<CHAIN_COUNT
     }
 
     /// Intermediate locally adjusted targets for all chains.
-    fn local_adjust_row<'a>(&'a self, epoch: Epoch) -> impl Iterator<Item = BlockTarget> + 'a {
-        let parent_targets = self.target.row(epoch.pred());
-        let parent_epoch_starts = self.epoch_start.row(epoch.pred());
-        let parent_epoch_ends = self.time.epoch_end_row(epoch.pred());
+    fn local_adjust_layer(&self, epoch: Epoch) -> impl Iterator<Item = BlockTarget> + '_ {
+        let parent_targets = self.target.layer(epoch.pred());
+        let parent_epoch_starts = self.epoch_start.layer(epoch.pred());
+        let parent_epoch_ends = self.time.epoch_end_layer(epoch.pred());
 
         parent_targets
             .zip(parent_epoch_starts)
@@ -351,9 +351,9 @@ impl<const CHAIN_COUNT: usize, const GRAPH_DEGREE: usize> BlockRange<CHAIN_COUNT
     ///    _blockWeight ph + targetToDifficulty (powTarget p adj t)
     /// ```
     ///
-    pub fn weight_row<'a>(&'a self, epoch: Epoch) -> impl Iterator<Item = BlockWeight> + 'a {
-        let parent_weights = self.weight.row(epoch.pred());
-        let targets = self.target_row(epoch.pred());
+    fn weight_layer(&self, epoch: Epoch) -> impl Iterator<Item = BlockWeight> + '_{
+        let parent_weights = self.weight.layer(epoch.pred());
+        let targets = self.target_layer(epoch.pred());
         parent_weights
             .zip(targets)
             .map(|(w, t)| BlockWeight(w.0 + t.0 * u256::from(EPOCH_LENGTH)))
@@ -378,12 +378,12 @@ impl<const CHAIN_COUNT: usize, const GRAPH_DEGREE: usize> BlockRange<CHAIN_COUNT
     ///    isLastInEpoch = (_blockHeight ph + 1) `mod` _WINDOW_WIDTH_ == 0
     /// ```
     ///
-    pub fn epoch_start_row<'a>(
-        &'a self,
+    fn epoch_start_layer(
+        &self,
         epoch: Epoch,
-    ) -> impl Iterator<Item = BlockEpochStart> + 'a {
+    ) -> impl Iterator<Item = BlockEpochStart> + '_ {
         self.time
-            .epoch_end_row(epoch.pred())
+            .epoch_end_layer(epoch.pred())
             .map(|t| BlockEpochStart(*t))
     }
 }
@@ -394,7 +394,7 @@ impl<const CHAIN_COUNT: usize, const GRAPH_DEGREE: usize> BlockRange<CHAIN_COUNT
 use crate::header::merkletree::header_root;
 
 impl<const CHAIN_COUNT: usize, const GRAPH_DEGREE: usize> BlockRange<CHAIN_COUNT, GRAPH_DEGREE> {
-    pub fn hash_row<'a>(&'a self, height: BlockHeight) -> impl Iterator<Item = BlockHash> + 'a {
+    pub fn hash_layer(&self, height: BlockHeight) -> impl Iterator<Item = BlockHash> + '_ {
         let headers = (0..CHAIN_COUNT).map(move |cid| self.get_header(ChainId(cid as u32), height));
         headers.map(|hdr| header_root(&hdr))
     }
@@ -407,29 +407,29 @@ impl<const CHAIN_COUNT: usize, const GRAPH_DEGREE: usize> BlockRange<CHAIN_COUNT
     pub fn check_pow(&self, chain: ChainId, height: BlockHeight) -> bool {
         let hdr = self.get_header(chain, height);
         let mut hasher = Blake2s256::new();
-        hasher.update(&hdr.flags.to_header_bytes());
-        hasher.update(&hdr.time.to_header_bytes());
+        hasher.update(hdr.flags.to_header_bytes());
+        hasher.update(hdr.time.to_header_bytes());
         hasher.update(hdr.parent.to_header_bytes());
         hasher.update((GRAPH_DEGREE as u16).to_le_bytes());
         for (chain, hash) in hdr.adjacents.iter() {
             hasher.update(chain.0.to_header_bytes());
             hasher.update(hash.0.to_header_bytes());
         }
-        hasher.update(&hdr.target.to_header_bytes());
+        hasher.update(hdr.target.to_header_bytes());
         hasher.update(hdr.payload.to_header_bytes());
-        hasher.update(&hdr.chain.to_header_bytes());
-        hasher.update(&hdr.weight.to_header_bytes());
-        hasher.update(&hdr.height.to_header_bytes());
-        hasher.update(&hdr.version.to_header_bytes());
-        hasher.update(&hdr.epoch_start.to_header_bytes());
-        hasher.update(&hdr.nonce.to_header_bytes());
+        hasher.update(hdr.chain.to_header_bytes());
+        hasher.update(hdr.weight.to_header_bytes());
+        hasher.update(hdr.height.to_header_bytes());
+        hasher.update(hdr.version.to_header_bytes());
+        hasher.update(hdr.epoch_start.to_header_bytes());
+        hasher.update(hdr.nonce.to_header_bytes());
         let hash = hasher.finalize();
         u256::from_le_bytes(hash.into()) < hdr.target.0
     }
 
-    pub fn check_pow_row(&self, height: BlockHeight) -> bool {
-        for chain in 0..CHAIN_COUNT {
-            if !self.check_pow(ChainId(chain), height) {
+    pub fn check_pow_layer(&self, height: BlockHeight) -> bool {
+        for cid in 0..CHAIN_COUNT {
+            if !self.check_pow(ChainId(cid as u32), height) {
                 return false;
             }
         }
@@ -441,18 +441,30 @@ impl<const CHAIN_COUNT: usize, const GRAPH_DEGREE: usize> BlockRange<CHAIN_COUNT
 // Extend Block Range
 
 impl<const CHAIN_COUNT: usize, const GRAPH_DEGREE: usize> BlockRange<CHAIN_COUNT, GRAPH_DEGREE> {
-    /// Extend the block range by a new row of blocks
+
+    /// Extend the block range one layer
     ///
     pub fn extend_block_range(&mut self, layer: &CompactLayer<CHAIN_COUNT>) {
+
+        // extend height properties
         self.time.v.extend(layer.time.iter().cloned());
         self.nonce.v.extend(layer.nonce.iter().cloned());
         self.payload.v.extend(layer.payload.iter().cloned());
 
-        self.target.v.extend(self.target_row(self.end_height.epoch()));
-        self.epoch_start.v.extend(self.epoch_start_row(self.end_height.epoch()));
-        self.weight.v.extend(self.weight_row(self.end_height.epoch()));
-        self.check_pow_row(self.end_height);
-        self.hash.v.extend(self.hash_row(self.end_height));
+        // extend epoch properties
+        if self.end_height.is_epoch_end() {
+            let new_targets: Vec<BlockTarget> = self.target_layer(self.end_height.epoch()).collect();
+            self.target.v.extend(new_targets);
+            let new_epoch_starts: Vec<BlockEpochStart> = self.epoch_start_layer(self.end_height.epoch()).collect();
+            self.epoch_start.v.extend(new_epoch_starts);
+            let new_weights: Vec<BlockWeight> = self.weight_layer(self.end_height.epoch()).collect();
+            self.weight.v.extend(new_weights);
+        }
+
+        // compute hash, update end_height, and check PoW
+        let new_hashes: Vec<BlockHash> = self.hash_layer(self.end_height).collect();
+        self.hash.v.extend(new_hashes);
         self.end_height = self.end_height.succ();
+        self.check_pow_layer(self.end_height);
     }
 }
